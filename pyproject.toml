@@ -1,0 +1,62 @@
+[project]
+name = "refactor-cli"
+version = "0.1.0"
+readme = "README.md"
+authors = [
+    { name = "Glinte", email = "96855131+Glinte@users.noreply.github.com" }
+]
+requires-python = ">=3.10"
+keywords = []
+classifiers = []
+dependencies = []
+
+[project.urls]
+Documentation = ""
+Homepage = "https://github.com/Glinte/refactor-cli"
+Source = "https://github.com/Glinte/refactor-cli"
+Issues = "https://github.com/Glinte/refactor-cli/issues"
+
+[dependency-groups]
+dev = [
+    "prek>=0.4.10",
+    "pyrefly>=1.1.1",
+    "ruff>=0.15.22",
+]
+docs = [
+    "zensical>=0.0.51",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+exclude-newer = "7 days"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "UP",
+    "RUF",
+    "PT",
+    "RET",
+    "SIM",
+    "PERF",
+    "C901",
+    "PLR0912",
+    "PLR0915",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.pyrefly]
+python-version = "3.10"

@@ -1,0 +1,43 @@
+[project]
+site_name = "refactor-cli"
+site_url = "https://glinte.github.io/refactor-cli/"
+site_description = "A command-line tool for refactoring Java/Kotlin/Python code."
+site_author = "Glinte"
+repo_url = "https://github.com/Glinte/refactor-cli"
+repo_name = "Glinte/refactor-cli"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+nav = [
+]
+
+[project.theme]
+language = "en"
+features = [
+    "content.action.edit",
+    "content.action.view",
+    "content.code.copy",
+    "navigation.footer",
+    "navigation.instant",
+    "navigation.instant.prefetch",
+    "navigation.path",
+    "navigation.sections",
+    "navigation.top",
+    "search.highlight",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.toc]
+permalink = true
