@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::{
     descriptor::Descriptor,
@@ -8,17 +9,28 @@ use crate::{
 
 pub struct Client {
     descriptor: Descriptor,
+    agent: ureq::Agent,
 }
 
 impl Client {
     pub fn new(descriptor: Descriptor) -> Self {
-        Self { descriptor }
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(2)))
+            .timeout_global(Some(Duration::from_secs(120)))
+            .max_redirects(0)
+            .build();
+        Self {
+            descriptor,
+            agent: config.into(),
+        }
     }
 
     pub fn call(&self, method: &'static str, params: Value) -> AppResult<Value> {
         let url = format!("http://127.0.0.1:{}/rpc", self.descriptor.port);
         let request = RpcRequest::new(method, params);
-        let mut response = ureq::post(url)
+        let mut response = self
+            .agent
+            .post(url)
             .header(
                 "Authorization",
                 &format!("Bearer {}", self.descriptor.token),
@@ -37,6 +49,13 @@ impl Client {
                 format!("plugin returned invalid JSON: {error}"),
             )
         })?;
+
+        if response.jsonrpc != "2.0" || response.id != 1 {
+            return Err(AppError::internal(
+                "INTERNAL_ERROR",
+                "plugin returned a mismatched JSON-RPC response",
+            ));
+        }
 
         match (response.result, response.error) {
             (Some(result), None) => Ok(result),

@@ -5,6 +5,8 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.project.ProjectManagerListener
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
@@ -35,13 +37,26 @@ class RefactorAgentServer : Disposable {
     private val token = ByteArray(32)
         .also(SecureRandom()::nextBytes)
         .let(Base64.getUrlEncoder().withoutPadding()::encodeToString)
-    private val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+    private val server = HttpServer.create(
+        InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0),
+        0,
+    )
     private val descriptorStore = DescriptorStore(server.address.port, token)
 
     init {
         server.createContext("/rpc", ::handle)
         server.executor = AppExecutorUtil.getAppExecutorService()
         server.start()
+        ApplicationManager.getApplication().messageBus.connect(this).subscribe(
+            ProjectManager.TOPIC,
+            object : ProjectManagerListener {
+                override fun projectClosed(project: Project) {
+                    descriptorStore.write(
+                        ProjectManager.getInstance().openProjects.filterNot { it === project },
+                    )
+                }
+            },
+        )
         log.info("refactor agent listening on 127.0.0.1:${server.address.port}")
     }
 
@@ -55,7 +70,12 @@ class RefactorAgentServer : Disposable {
     }
 
     private fun handle(exchange: HttpExchange) {
+        var requestId: JsonElement = JsonNull
         try {
+            if (exchange.requestURI.path != "/rpc") {
+                sendEmpty(exchange, 404)
+                return
+            }
             if (!exchange.remoteAddress.address.isLoopbackAddress) {
                 sendEmpty(exchange, 403)
                 return
@@ -76,21 +96,37 @@ class RefactorAgentServer : Disposable {
             }
 
             val request = json.parseToJsonElement(bytes.toString(StandardCharsets.UTF_8)).jsonObject
-            val id = request["id"] ?: JsonNull
+            requestId = request["id"] ?: JsonNull
+            if (request["jsonrpc"]?.jsonPrimitive?.content != "2.0") {
+                throw SerializationException("jsonrpc must be 2.0")
+            }
             val method = request["method"]?.jsonPrimitive?.content
                 ?: throw SerializationException("missing method")
             val params = request["params"] as? JsonObject ?: JsonObject(emptyMap())
             val result = router.route(method, params)
-            sendJson(exchange, success(id, result))
+            sendJson(exchange, success(requestId, result))
         } catch (error: RefactorException) {
-            sendJson(exchange, failure(JsonNull, error))
+            sendJson(exchange, failure(requestId, error))
         } catch (error: Exception) {
             log.warn("Failed to handle refactor request", error)
             sendJson(
                 exchange,
                 failure(
-                    JsonNull,
+                    requestId,
                     RefactorException("INTERNAL_ERROR", 5, error.message ?: "internal plugin error"),
+                ),
+            )
+        } catch (error: LinkageError) {
+            log.warn("Failed to link an optional refactor dependency", error)
+            sendJson(
+                exchange,
+                failure(
+                    requestId,
+                    RefactorException(
+                        "INTERNAL_ERROR",
+                        5,
+                        error.message ?: "plugin dependency linkage failed",
+                    ),
                 ),
             )
         } finally {
@@ -119,6 +155,9 @@ class RefactorAgentServer : Disposable {
                         buildJsonObject {
                             put("code", error.symbolicCode)
                             put("exitCode", error.exitCode)
+                            error.details.forEach { (key, value) ->
+                                if (key != "code" && key != "exitCode") put(key, value)
+                            }
                         },
                     )
                 },

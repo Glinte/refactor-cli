@@ -54,16 +54,26 @@ def python_check() -> tuple[bool, str]:
     return version >= (3, 10), detail
 
 
-def java_check() -> tuple[bool, str]:
+def java_major_version(detail: str) -> int | None:
+    match = re.search(r'version "(?:1\.)?(\d+)', detail)
+    return int(match.group(1)) if match is not None else None
+
+
+def check_java_runtime() -> tuple[bool, str]:
     ok, detail = command_output("java", "-version")
+    if ok and (java_major_version(detail) or 0) >= 25:
+        return True, detail
+
+    executable = "java.exe" if sys.platform == "win32" else "java"
+    toolchain_root = Path.home() / ".gradle" / "jdks"
+    for candidate in sorted(toolchain_root.glob(f"*/bin/{executable}")):
+        candidate_ok, candidate_detail = command_output(str(candidate), "-version")
+        if candidate_ok and (java_major_version(candidate_detail) or 0) >= 25:
+            return True, f"{candidate_detail} (Gradle toolchain)"
+
     if not ok:
         return False, detail
-
-    match = re.search(r'version "(?:1\.)?(\d+)', detail)
-    if match is None:
-        return False, f"could not determine Java version from: {detail}"
-
-    return int(match.group(1)) >= 21, detail
+    return False, f"JDK 25+ was not found; PATH reports {detail}"
 
 
 def virtual_environment_check() -> tuple[bool, str]:
@@ -124,9 +134,9 @@ def requirements() -> tuple[Requirement, ...]:
             "Install Rust with rustup from https://rustup.rs/ and ensure `cargo` is on PATH.",
         ),
         Requirement(
-            "JDK 21 or newer",
-            java_check,
-            "Install JDK 21+ and ensure `java` is on PATH. Temurin builds are available at https://adoptium.net/.",
+            "JDK 25 or newer",
+            check_java_runtime,
+            "Install JDK 25+ and ensure `java` is on PATH. Temurin builds are available at https://adoptium.net/.",
         ),
         Requirement(
             "Python development environment",

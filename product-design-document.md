@@ -1,6 +1,6 @@
 # `refactor`: a CLI Bridge to IntelliJ Semantic Rename and Find Usages
 
-**Status:** Draft
+**Status:** Release candidate; implementation gates green, live-agent benchmark pending
 **Scale:** One-person project, AI-assisted, ~2 weeks focused work
 **Primary user:** The author, plus any developer with a similar setup
 **Target languages:** Java, Kotlin (K2), Python
@@ -88,8 +88,8 @@ to pay for itself.
 
 * **A1.** IntelliJ IDEA is running with the project open, indexed, and with the required
   language plugins (Java/Kotlin bundled; Python plugin for Python projects).
-* **A2.** One pinned platform release line (initially IntelliJ IDEA 2026.2), Kotlin plugin
-  in K2 mode only.
+* **A2.** One pinned platform release line (IntelliJ IDEA 2026.2), whose Kotlin plugin
+  is K2-only.
 * **A3.** IntelliJ is the source of semantic truth; the tool never second-guesses
   resolution.
 * **A4.** The agent edits files outside the IDE constantly; stale-VFS is the normal case,
@@ -150,9 +150,10 @@ Supported targets:
 
 Behavior:
 
-* Semantic code references updated, **including non-source references** (Spring XML,
-  `persistence.xml`, resource bundles — these are real PSI references contributed by
-  framework support, not text matches, and skipping them would ship silent breakage).
+* Semantic code references updated, **including non-source references** contributed by
+  installed framework support (covered fixtures: Spring XML and `persistence.xml`).
+  Arbitrary `.properties` values and resource-bundle keys are string-encoded references,
+  are outside the target matrix, and are not claimed as complete.
 * Renaming a method renames its entire override hierarchy, per IntelliJ semantics; when the
   selected target is not the hierarchy root, output reports `hierarchyRoot`.
 * Language-required file renames (public Java top-level type) are part of the operation and
@@ -236,9 +237,9 @@ path changed. Files that changed but were not predicted are still reported, flag
 2  needs review (conflicts, non-source without flag, --dry-run)
 3  user error        SYMBOL_NOT_FOUND, AMBIGUOUS_TARGET, TARGET_MISMATCH,
                      UNSUPPORTED_SYMBOL, INVALID_NAME, FILE_NOT_FOUND,
-                     POSITION_OUT_OF_RANGE
-4  environment       IDE_NOT_RUNNING, PROJECT_NOT_FOUND, PROJECT_INDEXING,
-                     PROJECT_BUSY, SYNC_TIMEOUT, LANGUAGE_PLUGIN_MISSING,
+                     POSITION_OUT_OF_RANGE, INVALID_ARGUMENT
+4  environment       IDE_NOT_RUNNING, PROJECT_NOT_FOUND, PROJECT_BUSY,
+                     SYNC_TIMEOUT, LANGUAGE_PLUGIN_MISSING,
                      DIRTY_AFFECTED_DOCUMENT, EXTERNAL_CHANGE_CONFLICT,
                      READ_ONLY_FILE, IDE_VERSION_UNSUPPORTED
 5  internal          REFACTORING_FAILED, ROLLBACK_FAILED, INTERNAL_ERROR
@@ -316,14 +317,13 @@ backgrounded IDE can be arbitrarily stale.
 
 Before every operation:
 
-1. If `--touched` paths were given, refresh exactly those plus parent directories
+1. If `--touched` paths were given, refresh exactly those plus parent directories first
    (catches creations/deletions) via `refreshAndFindFileByNioPath`. **Hinted refreshes
-   always execute** — they cost <100 ms and skipping them reopens the staleness hole.
-2. Otherwise, asynchronously refresh the project content roots recursively. This full
-   refresh may be skipped only when a successful one completed within 2 s **and** the
-   platform watcher reports operational **and** no watcher event arrived since — a degraded
-   watcher disables the debounce entirely, since it would otherwise trust exactly the
-   mechanism whose unreliability motivates this section.
+   always execute** — they cost <100 ms and start re-indexing the likely changes early.
+2. Recursively refresh the project content roots as the correctness fallback for omitted
+   or incorrect hints. Version 0.1 intentionally performs this refresh on every operation;
+   it does not implement the optional watcher-based debounce. Watcher health is still
+   reported by `status`, but correctness never depends on it.
 3. `PsiDocumentManager.commitAllDocuments()`.
 4. If refresh triggered indexing, wait for smart mode up to 30 s, else `SYNC_TIMEOUT`
    with elapsed time so the agent retries instead of hanging.
@@ -338,18 +338,19 @@ Symbol selectors resolve through the language index (`JavaPsiFacade`; Kotlin dec
 index; Python qualified-name resolution), restricted to project scope, filtered by
 descriptor when given. Position selectors: path → `VirtualFile` → `PsiFile` → offset →
 element → walk up to the named declaration, resolving references so that selecting a
-*usage* selects its declaration. Both paths end identically: apply the `--expect` guard,
-take a `SmartPsiElementPointer`, compute a fingerprint (language, kind, qualified name,
-file, range, container) that mutation re-verifies after re-sync — a pointer that survived
-reparse but now aims at a different declaration is caught.
+*usage* selects its declaration. Both paths end identically: apply the `--expect` guard
+and retain the resolved PSI element plus its fingerprint (language, kind, qualified name,
+file, and range). Rename re-describes the target and verifies captured file bytes
+immediately before mutation, so a reparse or external change that moved the selector
+fails with `EXTERNAL_CHANGE_CONFLICT`.
 
 ## 3.6 Usages
 
-Runs on the platform Find Usages infrastructure with language handlers, in a cancellable
-smart read, post-sync. Collects to `--max` plus a count-only pass for the true total;
-classifies (code / import / non-source / override / non-code); library scope excluded.
-This service is shared verbatim by rename's analysis phase — building `usages` first is
-mostly building rename's front half.
+Runs on IntelliJ's semantic `ReferencesSearch` and override-search infrastructure in a
+smart read, post-sync. It collects project-scope references, computes the true total, then
+caps returned records at `--max`; library scope is excluded. Results classify code /
+import / non-source / override / non-code. Rename uses the same service across every
+declaration in the connected override hierarchy.
 
 ## 3.7 Rename execution
 
@@ -360,28 +361,29 @@ full override hierarchy on. A test-mode-style guard turns any attempted modal di
 `UNSUPPORTED_SYMBOL` instead of a hung IDE.
 
 Mutation sequence: acquire project mutex → re-sync → re-resolve + fingerprint check →
-modification-stamp check → commit documents → **`LocalHistory.putSystemLabel`** →
-capture before-text of candidate files → run the rename as one command in a write action →
+modification-stamp check → commit documents → capture before-bytes of candidate files →
+**`LocalHistory.putSystemLabel`** → run the rename as one command in a write action →
 complete postponed PSI → capture after-state *including unpredicted files* → derive
 `renamedPaths` + regions (+ diff on request) → save documents → release mutex.
 
-Rollback on failure, layered: (1) the Local History label — placed pre-mutation, cheap,
-independent of the undo stack, works for multi-file and non-source changes, and is the
-primary story because programmatic `UndoManager.undo` wants a `FileEditor` context and can
-itself fail on inconsistent PSI; (2) best-effort command undo when an editor context
-exists; (3) `ROLLBACK_FAILED` + IDE notification per §2.6.
+Rollback on failure restores every captured document/file byte-for-byte and removes
+observed creations, then verifies the restored state. The pre-mutation Local History label
+is the independent human recovery backstop. Incomplete restoration becomes
+`ROLLBACK_FAILED` plus the IDE notification required by §2.6.
 
-Concurrency: reads run concurrently; one sync at a time (joiners attach to the in-flight
-one); one usage-search-bearing analysis at a time; one mutation at a time, blocking new
-analysis; cancellable until the write command starts.
+Concurrency: reads run concurrently; syncs serialize per project; one
+usage-search-bearing analysis runs at a time; one mutation runs per project and blocks new
+analysis. The client applies a 120 s request timeout; sync's smart-mode wait is separately
+capped at 30 s. A write command is never canceled after it starts.
 
 ## 3.8 Kotlin K2
 
-The largest technical risk. The K2 rename path runs on the Analysis API; adapters respect
-`analyze {}` session lifetimes (no symbols escaping the session, no caching across read
-actions). Any `@ApiStatus.Internal` symbol used is recorded in a registry file (symbol,
-why no stable alternative, what breaks if it vanishes) — the input to every IDE-version
-upgrade. K2 only; K1 is not supported.
+The largest technical risk. Kotlin declarations are resolved as Kotlin PSI, hierarchy
+methods bridge through public light-method APIs, and mutation runs through IntelliJ's
+K2-aware rename processor. No Analysis API symbols escape a read action. Any
+`@ApiStatus.Internal` symbol used is recorded in a registry file (symbol, why no stable
+alternative, what breaks if it vanishes) — the input to every IDE-version upgrade. K2
+only; K1 is not supported.
 
 ## 3.9 Rust CLI notes
 
@@ -393,30 +395,37 @@ matters when an agent invokes it dozens of times per session.
 
 ## 3.10 Testing
 
-Model-level functional tests on real IntelliJ project fixtures (before-directory →
-expected-after-directory whole-tree comparison), per JetBrains' own recommendation — no
-mocked PSI. Budget real calendar time for making the test framework boot; it is
+Model-level functional tests run against real IntelliJ PSI/project fixtures with no mocked
+PSI. They assert resulting documents, file paths, structured reports, conflicts, and
+rollback state. Budget real calendar time for making the test framework boot; it is
 notoriously fiddly.
 
-Matrix highlights: Java Gradle/Maven/multi-module; overloads; rename initiated from an
-override; same simple name in several packages; filename-coupled public type; **case-only
-rename on macOS/Windows volumes**; Java↔Kotlin cross-references; **Spring XML +
-`persistence.xml` + resource-bundle references**; Kotlin objects/companions/extensions/
-type aliases with K2 asserted in setup; Python src-layout, namespace packages, aliased and
-relative imports, annotations, same-name-many-modules, dynamic imports (expected-limitation
-tests). Sync suite: external write then immediate call with no focus event; external
-create/delete; missing/wrong/omitted `--touched` (correctness must not depend on the
-hint); hinted refresh inside the debounce window (must still run); debounce disabled under
-degraded watcher; `EXTERNAL_CHANGE_CONFLICT`; `SYNC_TIMEOUT`. Payload suite: 200-usage
-result under the token budget; region caps; diff truncation; rename headers. Negative:
-every §2.6 code, dialog-attempt guard, mid-write processor exception, unpredicted-file
-reporting, rollback failure incl. the notification.
+Committed fixtures cover every §2.3 declaration kind; overload descriptors; same simple
+name in several packages; exact/ambiguous multi-module paths; filename-coupled and
+case-only public types on Windows; Java↔Kotlin references; Spring XML and
+`persistence.xml`; Kotlin objects, companions, extensions, and type aliases with K2
+asserted; Python relative imports, annotations, same-name modules, override conflicts,
+and multiple inheritance. Build-system import is delegated to the already-open IntelliJ
+project model, so the light-fixture suite does not separately import Maven and Gradle
+projects.
 
-Benchmark (release-gating, published in README): fixture repo with 10/100/500-usage
+The sync suite covers immediate external rewrite/create/delete, wrong and omitted
+`--touched`, external+unsaved conflicts, and `SYNC_TIMEOUT`. Payload tests cover a
+200-usage response budget, region caps, diff truncation, and rename headers. Negative
+tests cover structured selection/name/conflict/read-only failures, mid-write exceptions,
+unpredicted edits/create/delete, complete rollback, and rollback failure plus notification.
+Plugin-absence branches are verified by direct guards because the language plugins are
+necessarily present in the test IDE. IntelliJ 2026.2 itself is K2-only.
+
+Benchmark (release-gating, procedure published in `benchmarks/README.md`): fixture repo with 10/100/500-usage
 symbols, renamed by (a) a naive patch-loop agent, (b) a compile-assisted edit-build-fix
 agent on JVM, (c) the same agent via this CLI; record tokens and wall clock. Target: <5%
 of (a)'s tokens, <20% of (b)'s. Running through a real agent also tests whether the
 `--help` text and project docs successfully steer tool selection.
+
+The generator and strict analyzer are committed. Measurements are intentionally not
+fabricated: this gate remains pending until the paired workflows run in the live
+IntelliJ 2026.2 session and the model host exposes per-run token counts.
 
 ## 3.11 Risks
 

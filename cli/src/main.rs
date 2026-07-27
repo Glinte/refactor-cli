@@ -6,7 +6,7 @@ mod protocol;
 
 use std::{env, path::PathBuf, process::ExitCode};
 
-use clap::Parser;
+use clap::{Parser, error::ErrorKind};
 use serde_json::{Map, Value};
 
 use crate::{
@@ -17,7 +17,25 @@ use crate::{
 };
 
 fn main() -> ExitCode {
-    match run() {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            print!("{error}");
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => {
+            let error = clap_error(error);
+            print_json(&error.as_json());
+            return ExitCode::from(error.exit_code());
+        }
+    };
+
+    match run(cli) {
         Ok(value) => {
             print_json(&value);
             ExitCode::SUCCESS
@@ -29,8 +47,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> AppResult<Value> {
-    let cli = Cli::parse();
+fn run(cli: Cli) -> AppResult<Value> {
     let project_is_explicit = cli.project.is_some();
     let project = resolve_project(cli.project, project_is_explicit)?;
     let descriptor = Descriptor::discover(&project)?;
@@ -38,6 +55,18 @@ fn run() -> AppResult<Value> {
     let (method, params) = command_request(cli.command, &project)?;
 
     client.call(method, Value::Object(params))
+}
+
+fn clap_error(error: clap::Error) -> AppError {
+    AppError::user(
+        "INVALID_ARGUMENT",
+        error
+            .to_string()
+            .lines()
+            .next()
+            .unwrap_or("invalid command line")
+            .to_owned(),
+    )
 }
 
 fn resolve_project(project: Option<PathBuf>, explicit: bool) -> AppResult<PathBuf> {
@@ -84,13 +113,19 @@ fn command_request(
             params.insert("touched".to_owned(), paths_value(touched));
             "sync"
         }
-        Command::Resolve { selector } => {
+        Command::Resolve { selector, touched } => {
             add_selector(&mut params, selector)?;
+            params.insert("touched".to_owned(), paths_value(touched));
             "resolve"
         }
-        Command::Usages { selector, max } => {
+        Command::Usages {
+            selector,
+            max,
+            touched,
+        } => {
             add_selector(&mut params, selector)?;
             params.insert("max".to_owned(), Value::from(max));
+            params.insert("touched".to_owned(), paths_value(touched));
             "usages"
         }
         Command::Rename {
@@ -134,5 +169,22 @@ fn print_json(value: &Value) {
         Err(error) => {
             println!(r#"{{"code":"INTERNAL_ERROR","message":"failed to encode output: {error}"}}"#)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, clap_error};
+
+    #[test]
+    fn clap_failures_use_the_json_contract() {
+        let error = Cli::try_parse_from(["refactor", "resolve", "--line", "1"])
+            .expect_err("incomplete selector should fail");
+        let error = clap_error(error);
+
+        assert_eq!(error.exit_code(), 3);
+        assert_eq!(error.as_json()["code"], "INVALID_ARGUMENT");
     }
 }

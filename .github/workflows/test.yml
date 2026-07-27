@@ -52,6 +52,9 @@ jobs:
       - name: Check formatting
         run: uv run --locked ruff format --check .
 
+      - name: Test benchmark harness
+        run: uv run --locked python -m unittest discover -s benchmarks -p "test_*.py"
+
   python-typecheck:
     name: Type checking
     runs-on: ubuntu-latest
@@ -74,6 +77,46 @@ jobs:
       - name: Run pyrefly
         run: uv run --locked pyrefly check
 
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.32"
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install documentation dependencies
+        run: uv sync --locked --group docs
+
+      - name: Build documentation
+        run: uv run --locked --group docs zensical build --clean --strict
+
+  rust-cli:
+    name: Rust CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path cli/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path cli/Cargo.toml
+
   intellij-plugin:
     name: IntelliJ plugin
     runs-on: ubuntu-latest
@@ -86,5 +129,5 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x plugin/gradlew
 
-      - name: Check plugin
-        run: ./plugin/gradlew -p plugin check
+      - name: Check and verify plugin
+        run: ./plugin/gradlew -p plugin check buildPlugin verifyPlugin --no-parallel

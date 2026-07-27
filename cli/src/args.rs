@@ -33,14 +33,22 @@ pub enum Command {
     Resolve {
         #[command(flatten)]
         selector: SelectorArgs,
+
+        /// Paths recently changed outside the IDE; always refreshed before resolution.
+        #[arg(long, value_name = "PATH")]
+        touched: Vec<PathBuf>,
     },
     /// Find semantic usages of a symbol.
     Usages {
         #[command(flatten)]
         selector: SelectorArgs,
 
-        #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u32).range(1..=10_000))]
         max: u32,
+
+        /// Paths recently changed outside the IDE; always refreshed before searching.
+        #[arg(long, value_name = "PATH")]
+        touched: Vec<PathBuf>,
     },
     /// Rename a symbol through IntelliJ's refactoring engine.
     Rename {
@@ -163,6 +171,34 @@ mod tests {
     #[test]
     fn position_selector_requires_line_and_column() {
         let cli = Cli::try_parse_from(["refactor", "resolve", "--file", "src/User.java"]);
+
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn parses_touched_hint_for_usages() {
+        let cli = Cli::try_parse_from([
+            "refactor",
+            "usages",
+            "--symbol",
+            "com.example.User",
+            "--touched",
+            "src/User.java",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn usages_max_is_bounded_for_response_safety() {
+        let cli = Cli::try_parse_from([
+            "refactor",
+            "usages",
+            "--symbol",
+            "com.example.User",
+            "--max",
+            "10001",
+        ]);
 
         assert!(cli.is_err());
     }

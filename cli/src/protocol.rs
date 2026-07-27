@@ -22,6 +22,8 @@ impl RpcRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct RpcResponse {
+    pub jsonrpc: String,
+    pub id: Value,
     pub result: Option<Value>,
     pub error: Option<RpcError>,
 }

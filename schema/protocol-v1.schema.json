@@ -44,6 +44,24 @@
         }
       ]
     },
+    "params": {
+      "type": "object",
+      "required": ["project"],
+      "properties": {
+        "project": { "type": "string", "minLength": 1 },
+        "selector": { "$ref": "#/$defs/selector" },
+        "touched": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "max": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "to": { "type": "string", "minLength": 1 },
+        "dryRun": { "type": "boolean" },
+        "forceNonSource": { "type": "boolean" },
+        "diff": { "enum": ["none", "inline", "file"] }
+      },
+      "additionalProperties": false
+    },
     "request": {
       "type": "object",
       "required": ["jsonrpc", "id", "method", "params"],
@@ -53,20 +71,39 @@
         "method": {
           "enum": ["status", "sync", "resolve", "usages", "rename"]
         },
-        "params": {
-          "type": "object",
-          "required": ["project"],
-          "properties": {
-            "project": { "type": "string", "minLength": 1 },
-            "selector": { "$ref": "#/$defs/selector" },
-            "touched": {
-              "type": "array",
-              "items": { "type": "string" }
-            }
-          },
-          "additionalProperties": true
-        }
+        "params": { "$ref": "#/$defs/params" }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "method": { "enum": ["resolve", "usages", "rename"] } },
+            "required": ["method"]
+          },
+          "then": {
+            "properties": { "params": { "required": ["project", "selector"] } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "method": { "const": "rename" } },
+            "required": ["method"]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "required": [
+                  "project",
+                  "selector",
+                  "to",
+                  "dryRun",
+                  "forceNonSource",
+                  "diff"
+                ]
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "response": {
