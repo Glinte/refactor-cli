@@ -1,5 +1,8 @@
 # refactor-cli
 
+> [!NOTE]
+> This is AI generated use at your own risk. Doesn't look risky but the CLI isn't that useful either tbh.
+
 `refactor-cli` is a thin Rust command-line client backed by an IntelliJ plugin. The CLI
 discovers the IDE instance for a project, sends an authenticated JSON-RPC request over
 loopback, prints JSON, and maps protocol failures to stable process exit codes.
